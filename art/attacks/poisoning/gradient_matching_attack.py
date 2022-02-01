@@ -37,6 +37,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 import pdb
 import random
+from tqdm import tqdm
 
 class GradientMatchingAttack(Attack):
     """
@@ -75,6 +76,8 @@ class GradientMatchingAttack(Attack):
         retrain_epoch: int = 25, 
         patching_strategy = "random",
         patch_size: int = 8,
+        patch_array = np.zeros((1,1)),
+        target_class: int = 1
     ):
         """
         Initialize a Gradient Matching Clean-Label poisoning attack (Witches' Brew).
@@ -109,6 +112,8 @@ class GradientMatchingAttack(Attack):
         self.stop_epoch = self.max_epochs
         self.patching_strategy = patching_strategy
         self.patch_size = patch_size
+        self.patch_array = patch_array
+        self.target_class = target_class
         
         self._check_params()
 
@@ -367,6 +372,7 @@ class GradientMatchingAttack(Attack):
     def _weight_grad(classifier: "CLASSIFIER_NEURALNETWORK_TYPE", x: object, target: object) -> object:
         from art.estimators.classification.pytorch import PyTorchClassifier
         from art.estimators.classification.tensorflow import TensorFlowV2Classifier
+#         pdb.set_trace()
 
         if isinstance(classifier, TensorFlowV2Classifier):
             # Get the target gradient vector.
@@ -375,7 +381,7 @@ class GradientMatchingAttack(Attack):
             with tf.GradientTape() as t:  # pylint: disable=C0103
                 t.watch(classifier.model.weights)
                 output = classifier.model(x)
-                loss = classifier.model.compiled_loss(target, output)
+                loss = classifier.model.compiled_loss(target, output)    
             d_w = t.gradient(loss, classifier.model.trainable_weights)
             d_w = tf.concat([tf.reshape(d, [-1]) for d in d_w], 0)
             d_w_norm = d_w / tf.sqrt(tf.reduce_sum(tf.square(d_w)))
@@ -401,13 +407,42 @@ class GradientMatchingAttack(Attack):
     # random: For Gradient Matching/Witche's Brew
     def __get_max_grad_norm(self,x,target,num_poison_examples):  
         import tensorflow as tf
+        import torch
+        from art.estimators.classification.pytorch import PyTorchClassifier
+        from art.estimators.classification.tensorflow import TensorFlowV2Classifier
         grad_norms = []
-        for image, label in zip(x,target):
-            image = tf.expand_dims(tf.constant(image),axis=0)
-            label = tf.expand_dims(tf.constant(label),axis=0)
+#         num = x.shape[0]
+        
+#         for i in range(0,num,self.batch_size):
+#             image = tf.constant(x[i:i+self.batch_size])
+#             label = tf.constant(target[i:i+self.batch_size])
+#             training_grad_norm = self._weight_grad(self.substitute_classifier,image,label)
+#             grad_norms.append(tf.reduce_sum(training_grad_norm))
+        index_target = np.where(target.argmax(axis=1)==self.target_class)[0]
+        print("index_target",index_target)
+        for i in index_target:
+            image = x[i]
+            label = target[i]
+            if isinstance(self.substitute_classifier, PyTorchClassifier):
+                image = torch.unsqueeze(torch.tensor(image),axis=0)
+                label = torch.unsqueeze(torch.tensor(label),axis=0)
+            if  isinstance(self.substitute_classifier, TensorFlowV2Classifier): 
+                image = tf.expand_dims(tf.constant(image),axis=0)
+                label = tf.expand_dims(tf.constant(label),axis=0)
             training_grad_norm = self._weight_grad(self.substitute_classifier,image,label)
-            grad_norms.append(tf.reduce_sum(training_grad_norm))
-        indices_poison = [i[0] for i in sorted(enumerate(grad_norms), key=lambda x:x[1])][-num_poison_examples:]
+            grad_norms.append(tf.reduce_sum(training_grad_norm).numpy())
+            
+        pdb.set_trace()
+        
+#         for image, label in tqdm(zip(x,target)):
+#             image = tf.expand_dims(tf.constant(image),axis=0)
+#             label = tf.expand_dims(tf.constant(label),axis=0)
+#             training_grad_norm = self._weight_grad(self.substitute_classifier,image,label)
+#             grad_norms.append(tf.reduce_sum(training_grad_norm))
+#         print("grad_norms",grad_norms)
+#     idx = (-arr).argsort()[:n]
+        indices_poison = sorted(range(len(grad_norms)), key = lambda sub: grad_norms[sub])[-num_poison_examples:]
+#         indices_poison = [i[0] for i in sorted(enumerate(grad_norms), key=lambda x:x[1])][-num_poison_examples:]
         print(len(grad_norms))
 #         indices_poison = np.argsort(training_grad_norm)[-num_poison_examples:]
         print(len(indices_poison))
@@ -417,11 +452,12 @@ class GradientMatchingAttack(Attack):
               
     def __apply_patch_location(self,x):       
         if self.patching_strategy == "random":
-            random_x = random.randint(0, x.shape[1]-self.patch_size-1)
-            random_y = random.randint(0, x.shape[1]-self.patch_size-1)
-            x[:,random_x:random_x+self.patch_size,random_y:random_y+self.patch_size,:] = self.patch_array
+            for i in range(0,x.shape[0]-1):
+                random_x = random.randint(0, x.shape[1]-self.patch_size-1)
+                random_y = random.randint(0, x.shape[1]-self.patch_size-1)
+                x[i:i+1,random_x:random_x+self.patch_size,random_y:random_y+self.patch_size,:] = self.patch_array
         else:
-            x[:,16:24,16:24,:] = self.patch_array   
+            x[:,:,-8:,-8:] = self.patch_array   
         return x
         
     def poison(
@@ -440,7 +476,7 @@ class GradientMatchingAttack(Attack):
         from art.estimators.classification.pytorch import PyTorchClassifier
         from art.estimators.classification.tensorflow import TensorFlowV2Classifier
         
-        print("self.substitute_classifier.model.trainable",self.substitute_classifier.model.trainable)
+
         if isinstance(self.substitute_classifier, TensorFlowV2Classifier):
             poisoner = self.__poison__tensorflow
         elif isinstance(self.substitute_classifier, PyTorchClassifier):
@@ -465,6 +501,7 @@ class GradientMatchingAttack(Attack):
         best_indices_poison = None
 
         if len(np.shape(y_train)) == 2:
+            print("shape of y_train",y_train.shape)
             y_train_classes = np.argmax(y_train, axis=-1)
         else:
             y_train_classes = y_train
@@ -483,6 +520,7 @@ class GradientMatchingAttack(Attack):
                 
                 from tensorflow.keras.preprocessing.image import ImageDataGenerator
                 retrain_dur = int(np.floor(self.max_epochs/self.retraining_factor))
+#                 pdb.set_trace()
                 for step in range(0,self.max_epochs,retrain_dur):
                     print("value of step",step)
                     self.initial_epoch = step
@@ -505,7 +543,7 @@ class GradientMatchingAttack(Attack):
                         )
 
                     datagen.fit(x_train)
-                    self.substitute_classifier.model.fit(datagen.flow(x_train, y_train, batch_size=self.batch_size), steps_per_epoch=x_train.shape[0] // self.batch_size,epochs=self.retrain_epoch,verbose=0)
+                    self.substitute_classifier.model.fit(datagen.flow(x_train, y_train, batch_size=self.batch_size), steps_per_epoch=x_train.shape[0] // self.batch_size,epochs=self.retrain_epoch,verbose=1)
                     print("shape of x_poisoned",x_poisoned.shape)
                     x_train[indices_poison]=x_poisoned   
                     print("shape of x_train",x_train.shape)
