@@ -320,6 +320,7 @@ class GradientMatchingAttack(Attack):
                 """
                 Applies the poison noise and compute the loss with respect to the target gradient.
                 """
+#                 pdb.set_trace()
                 poisoned_samples = self.noise_embedding(x, indices_poison)
                 d_w2_norm = self.gradient_matching._weight_grad(self.classifier, poisoned_samples, y)
                 d_w2_norm.requires_grad_(True)
@@ -388,10 +389,11 @@ class GradientMatchingAttack(Attack):
             return d_w_norm
         elif isinstance(classifier, PyTorchClassifier):
             import torch
-
+         
             classifier.model.zero_grad()
             y = classifier.model(x)
-            loss_ = classifier.loss(y, target)
+#             loss_ = classifier.loss(y, target)
+            loss_ = classifier.loss(y, torch.argmax(target,axis=1))
             loss_.backward()
             d_w = [w.grad for w in classifier.model.parameters()]
             d_w = torch.cat([w.flatten() for w in d_w])
@@ -432,7 +434,7 @@ class GradientMatchingAttack(Attack):
             training_grad_norm = self._weight_grad(self.substitute_classifier,image,label)
             grad_norms.append(tf.reduce_sum(training_grad_norm).numpy())
             
-        pdb.set_trace()
+#         pdb.set_trace()
         
 #         for image, label in tqdm(zip(x,target)):
 #             image = tf.expand_dims(tf.constant(image),axis=0)
@@ -528,22 +530,27 @@ class GradientMatchingAttack(Attack):
                     self.stop_epoch = step + retrain_dur
                     print("value of stop epoch",self.stop_epoch)
                     x_poisoned, B_ = poisoner(x_trigger, y_trigger, x_poison, y_poison) 
+                    if isinstance(self.substitute_classifier, TensorFlowV2Classifier):
+                        
+                        datagen = ImageDataGenerator(
+                            featurewise_center=False,
+                            samplewise_center=False,
+                            featurewise_std_normalization=False,
+                            samplewise_std_normalization=False,
+                            zca_whitening=False,
+                            rotation_range=15,
+                            width_shift_range=0.1,
+                            height_shift_range=0.1,
+                            horizontal_flip=True,
+                            vertical_flip=False
+                            )
 
-                    datagen = ImageDataGenerator(
-                        featurewise_center=False,
-                        samplewise_center=False,
-                        featurewise_std_normalization=False,
-                        samplewise_std_normalization=False,
-                        zca_whitening=False,
-                        rotation_range=15,
-                        width_shift_range=0.1,
-                        height_shift_range=0.1,
-                        horizontal_flip=True,
-                        vertical_flip=False
-                        )
-
-                    datagen.fit(x_train)
-                    self.substitute_classifier.model.fit(datagen.flow(x_train, y_train, batch_size=self.batch_size), steps_per_epoch=x_train.shape[0] // self.batch_size,epochs=self.retrain_epoch,verbose=1)
+                        datagen.fit(x_train)
+                        self.substitute_classifier.model.fit(datagen.flow(x_train, y_train, batch_size=self.batch_size), steps_per_epoch=x_train.shape[0] // self.batch_size,epochs=self.retrain_epoch,verbose=1)
+                    elif isinstance(self.substitute_classifier, PyTorchClassifier):
+                        print("Hey Boy")
+#                         self.substitute_classifier.model.fit(datagen.flow(x_train, y_train, batch_size=self.batch_size), steps_per_epoch=x_train.shape[0] // self.batch_size,epochs=self.retrain_epoch,verbose=1)
+                        
                     print("shape of x_poisoned",x_poisoned.shape)
                     x_train[indices_poison]=x_poisoned   
                     print("shape of x_train",x_train.shape)
@@ -553,6 +560,7 @@ class GradientMatchingAttack(Attack):
                 indices_poison = np.random.permutation(np.where([y in classes_target for y in y_train_classes])[0])[
                 :num_poison_samples
             ]
+                print("got into random")
                 x_poison = x_train[indices_poison]
                 y_poison = y_train[indices_poison]
                 self.__initialize_poison(x_trigger, y_trigger, x_poison, y_poison)
@@ -607,6 +615,7 @@ class GradientMatchingAttack(Attack):
         epoch_iterator = trange(self.max_epochs) if self.verbose else range(self.max_epochs)
         for _ in epoch_iterator:
             batch_iterator = tqdm(trainloader) if self.verbose else trainloader
+#             pdb.set_trace()
             for x, indices, y in batch_iterator:
                 self.backdoor_model.zero_grad()
                 loss, poisoned_samples = self.backdoor_model(x, indices, y, self.grad_ws_norm)
