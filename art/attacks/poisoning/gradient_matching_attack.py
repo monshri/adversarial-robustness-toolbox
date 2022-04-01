@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from art.utils import CLASSIFIER_NEURALNETWORK_TYPE
 
 logger = logging.getLogger(__name__)
-
+import pdb
 
 class GradientMatchingAttack(Attack):
     """
@@ -102,7 +102,7 @@ class GradientMatchingAttack(Attack):
             verbose = 1
         self.verbose = verbose
         self._check_params()
-
+       
     def __initialize_poison(
         self, x_trigger: np.ndarray, y_trigger: np.ndarray, x_poison: np.ndarray, y_poison: np.ndarray
     ):
@@ -274,7 +274,7 @@ class GradientMatchingAttack(Attack):
             d_w = torch.cat([w.flatten() for w in gradspred])
             d_w_norm = d_w / torch.sqrt(torch.sum(torch.square(d_w)))
             return d_w_norm
-
+            
         class NoiseEmbedding(nn.Module):
             """
             Gradient matching noise layer.
@@ -379,7 +379,36 @@ class GradientMatchingAttack(Attack):
         self.lr_schedule = torch.optim.lr_scheduler.LambdaLR(
             self.optimizer, PredefinedLRSchedule(*self.learning_rate_schedule)
         )
+    
+    
+    def select_poison_indices(self,classifier, x,y_train_classes, classes_target, poison_pp):
+            import torch
+            get_target_indices = []
+            i=0
+            for y in y_train_classes:
+                if y in classes_target:
+                    get_target_indices.append(i)
+                i+=1    
+            poison_num = int(poison_pp*len(get_target_indices))        
+            device = "cuda" if torch.cuda.is_available() else "cpu"
 
+            grad_norms = []
+            differentiable_params = [p for p in classifier.model.parameters() if p.requires_grad]
+            for idx in get_target_indices:
+                image = torch.tensor(x[idx]).to(device).type(torch.cuda.FloatTensor)  # this will get image and labels from target class only
+                label = torch.tensor(y_train_classes[idx]).to(device)
+                loss = classifier.loss(classifier.model(image.unsqueeze(0)), label.unsqueeze(0))
+                gradients = torch.autograd.grad(loss, differentiable_params, only_inputs=True)
+                grad_norm = 0
+                for grad in gradients:
+                    grad_norm += grad.detach().pow(2).sum()
+                grad_norms.append(grad_norm.sqrt())  
+              
+            indices = sorted(range(len(grad_norms)), key=lambda k: grad_norms[k])
+            indices = indices[-poison_num:]
+            result_indices = np.array(get_target_indices)[indices].tolist()
+            return result_indices # this will get only indices for target class
+    
     def poison(
         self, x_trigger: np.ndarray, y_trigger: np.ndarray, x_train: np.ndarray, y_train: np.ndarray
     ) -> Tuple[np.ndarray, np.ndarray]:
@@ -413,7 +442,7 @@ class GradientMatchingAttack(Attack):
         if len(np.shape(y_trigger)) == 2:  # dense labels
             classes_target = set(np.argmax(y_trigger, axis=-1))
         else:  # sparse labels
-            classes_target = set(y_trigger)
+            classes_target = set(y_trigger)  
         num_poison_samples = int(self.percent_poison * len(x_train))
 
         # Try poisoning num_trials times and choose the best one.
@@ -425,16 +454,28 @@ class GradientMatchingAttack(Attack):
             y_train_classes = np.argmax(y_train, axis=-1)
         else:
             y_train_classes = y_train
+        ###### CHECK: If these indices should be constant
+        indices_poison = self.select_poison_indices(self.substitute_classifier,x_train,y_train_classes,classes_target,self.percent_poison)
+        
         for _ in trange(self.max_trials):
-            indices_poison = np.random.permutation(np.where([y in classes_target for y in y_train_classes])[0])[
-                :num_poison_samples
-            ]
+
+            # if selection == 'max-gradient':
+            #     indices_poison = select_poison_indices(classifier,x_train,y_train_classes,classes_target,num_poison_samples)
+
+            # else: # this does random selection 
+            #     indices_poison = np.random.permutation(np.where([y in classes_target for y in y_train_classes])[0])[
+            #         :num_poison_samples]
+            
+            ##### NOTE: Remove those trigger images from there
+            ###### NOTE: Use the same trigger image 
             x_poison = x_train[indices_poison]
             y_poison = y_train[indices_poison]
+#             pdb.set_trace()
             self.__initialize_poison(x_trigger, y_trigger, x_poison, y_poison)
             x_poisoned, B_ = poisoner(x_poison, y_poison)  # pylint: disable=C0103
             finish_poisoning()
             B_ = np.mean(B_)  # Averaging B losses from multiple batches.  # pylint: disable=C0103
+            print(B_)
             if B_ < best_B:
                 best_B = B_  # pylint: disable=C0103
                 best_x_poisoned = x_poisoned
