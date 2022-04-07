@@ -382,32 +382,36 @@ class GradientMatchingAttack(Attack):
     
     
     def select_poison_indices(self,classifier, x,y_train_classes, classes_target, poison_pp):
-            import torch
-            get_target_indices = []
-            i=0
-            for y in y_train_classes:
-                if y in classes_target:
-                    get_target_indices.append(i)
-                i+=1    
-            poison_num = int(poison_pp*len(get_target_indices))        
-            device = "cuda" if torch.cuda.is_available() else "cpu"
+        # CHECK IF THE MODEL IS TRAIN/EVAL?????
+        import torch
+        get_target_indices = []
+        i=0
+        for y in y_train_classes:
+            if y in classes_target:
+                get_target_indices.append(i)
+            i+=1    
+        poison_num = int(poison_pp*len(get_target_indices))        
+        device = "cuda" if torch.cuda.is_available() else "cpu"
 
-            grad_norms = []
-            differentiable_params = [p for p in classifier.model.parameters() if p.requires_grad]
-            for idx in get_target_indices:
-                image = torch.tensor(x[idx]).to(device).type(torch.cuda.FloatTensor)  # this will get image and labels from target class only
-                label = torch.tensor(y_train_classes[idx]).to(device)
-                loss = classifier.loss(classifier.model(image.unsqueeze(0)), label.unsqueeze(0))
-                gradients = torch.autograd.grad(loss, differentiable_params, only_inputs=True)
-                grad_norm = 0
-                for grad in gradients:
-                    grad_norm += grad.detach().pow(2).sum()
-                grad_norms.append(grad_norm.sqrt())  
-              
-            indices = sorted(range(len(grad_norms)), key=lambda k: grad_norms[k])
-            indices = indices[-poison_num:]
-            result_indices = np.array(get_target_indices)[indices].tolist()
-            return result_indices # this will get only indices for target class
+        grad_norms = []
+        criterion = torch.nn.CrossEntropyLoss()
+        model = classifier.model
+        model.eval()
+        differentiable_params = [p for p in classifier.model.parameters() if p.requires_grad]
+        for idx in get_target_indices:
+            image = torch.tensor(x[idx]).to(device).type(torch.cuda.FloatTensor)  # this will get image and labels from target class only
+            label = torch.tensor(y_train_classes[idx]).to(device)
+            loss = criterion(model(image.unsqueeze(0)), label.unsqueeze(0))
+            gradients = torch.autograd.grad(loss, differentiable_params, only_inputs=True)
+            grad_norm = 0
+            for grad in gradients:
+                grad_norm += grad.detach().pow(2).sum()
+            grad_norms.append(grad_norm.sqrt())  
+
+        indices = sorted(range(len(grad_norms)), key=lambda k: grad_norms[k])
+        indices = indices[-poison_num:]
+        result_indices = np.array(get_target_indices)[indices].tolist()
+        return result_indices # this will get only indices for target class
     
     def poison(
         self, x_trigger: np.ndarray, y_trigger: np.ndarray, x_train: np.ndarray, y_train: np.ndarray
@@ -455,7 +459,8 @@ class GradientMatchingAttack(Attack):
         else:
             y_train_classes = y_train
         ###### CHECK: If these indices should be constant
-        indices_poison = self.select_poison_indices(self.substitute_classifier,x_train,y_train_classes,classes_target,self.percent_poison)
+        x_send = np.copy(x_train)
+        indices_poison = self.select_poison_indices(self.substitute_classifier,x_send,y_train_classes,classes_target,self.percent_poison)
         
         for _ in trange(self.max_trials):
 
